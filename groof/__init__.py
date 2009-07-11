@@ -36,6 +36,7 @@
 
 from storage.tc import TokyoCabinetStorage
 from graph import Graph
+from traverse import TraverserGenerator
 
 __all__ = ['graph']
 
@@ -44,6 +45,10 @@ def graph(path):
     storage = TokyoCabinetStorage()
     storage.open(path, 'rw')
     return Graph(storage)
+    
+    
+def traverse(traverser_func, start_v, traversal_algorithm, e=None):
+    return InlineTraverser(traverser_func, start_v, traversal_algorithm, e).run()
     
     
 if __name__ == "__main__":
