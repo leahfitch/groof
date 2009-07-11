@@ -18,13 +18,10 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-"""
-@TODO Make writes thread-safe
-"""
-
 from datetime import date
 import json
 from uuid import uuid4 as uuid
+import threading
 
 
 class TrackedAttrsMixin(object):
@@ -155,9 +152,9 @@ class Graph(object):
     
     def __init__(self, storage):
         self.storage = storage
-        self.dirty = []
-        self.removed = []
-        self._txn = Transaction(self)
+        self.local = threading.local()
+        self.local.dirty = []
+        self.local.removed = []
         
         
     def create(self, id=None):
@@ -181,8 +178,8 @@ class Graph(object):
     
     def __delitem__(self, id):
         self.assert_in_txn()
-        if id not in self.removed and id in self.storage:
-            self.removed.append(id)
+        if id not in self.local.removed and id in self.storage:
+            self.local.removed.append(id)
     
     
     def __len__(self):
@@ -190,15 +187,17 @@ class Graph(object):
     
     
     def txn(self):
-        return self._txn
+        if not hasattr(self.local, 'txn'):
+            self.local.txn = Transaction(self)
+        return self.local.txn
     
     
     def flush(self):
-        if len(self.dirty) > 0 or len(self.removed) > 0:
+        if len(self.local.dirty) > 0 or len(self.local.removed) > 0:
             with self.storage.txn():
-                for id in self.removed:
+                for id in self.local.removed:
                     del self.storage[id]
-                for v in self.dirty:
+                for v in self.local.dirty:
                     self.storage[v.id] = json.dumps((v.attrs, [(a.e,a.s,a.attrs) for a in v.arcs]))
         
         
@@ -210,8 +209,8 @@ class Graph(object):
         self.assert_in_txn()
         if isinstance(item, Arc):
             item = item.p
-        if item not in self.dirty:
-            self.dirty.append(item)
+        if item not in self.local.dirty:
+            self.local.dirty.append(item)
         
         
     def assert_serializable(self, v):
@@ -220,4 +219,4 @@ class Graph(object):
         
         
     def assert_in_txn(self):
-        assert self._txn.active, "Operation not permitted outside a transaction"
+        assert self.txn().active, "Operation not permitted outside a transaction"
