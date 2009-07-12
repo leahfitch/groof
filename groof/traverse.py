@@ -21,28 +21,37 @@
 
 """Simple graph traversal"""
 
-
-from collections import namedtuple, deque
-
-Traversal = namedtuple('Traversal', 'last_vertex vertex last_arc depth traversed returned')
+from collections import deque
 
 
 BFS = 1
 DFS = 2
 
 
+
+class Traversal(object):
+    
+    def __init__(self, last_vertex, vertex, last_arc, depth, traversed, returned):
+        self.last_vertex = last_vertex
+        self.vertex = vertex
+        self.last_arc = last_arc
+        self.depth = depth
+        self.traversed = traversed
+        self.returned = returned
+
+
 class Traverser(object):
     
     
-    def __init__(self, start_v, traversal_algorithm, e=None):
+    def __init__(self, start_v, traversal_algorithm, label=None):
         if traversal_algorithm == BFS:
-            self.arcs = self.breadth_first(deque((start_v, 0)))
+            self.arcs = self.breadth_first(deque([(start_v, 0)]))
         elif traversal_algorithm == DFS:
             self.arcs = self.depth_first(start_v, 0)
         else:
-            raise ValueError, "Unknown direction: %s", self.direction
+            raise ValueError, "Unknown traversal algorithm: %s", self.traversal_algorithm
             
-        self.e = e
+        self.label = label
         self.traversal = Traversal(None, start_v, None, 0, 0, 0)
         self.visited = []
         
@@ -53,9 +62,10 @@ class Traverser(object):
         if self.should_return(self.traversal):
             self.traversal.returned += 1
             yield self.traversal.vertex
+        self.visited.append(self.traversal.vertex.id)
         for a, depth in self.arcs:
             self.traversal.last_vertex = self.traversal.vertex
-            self.traversal.vertex = a.successor()
+            self.traversal.vertex = a.end
             self.traversal.last_arc = a
             self.traversal.depth = depth
             self.traversal.traversed += 1
@@ -68,22 +78,22 @@ class Traverser(object):
     
     def breadth_first(self, q):
         while len(q) > 0:
-            v,depth = q.poplet()
+            v,depth = q.popleft()
             depth += 1
-            for a in c.get_arcs(self.e):
-                if a.successor().id not in self.visited:
-                    self.visited.append(a.successor().id)
+            for a in v.get_arcs(self.label):
+                if a.end_id not in self.visited:
+                    self.visited.append(a.end_id)
                     yield a, depth
-                    q.append(a.successor(), depth)
+                    q.append((a.end, depth))
         
         
     def depth_first(self, c, depth):
         depth += 1
-        for a in c.get_arcs(self.e):
-            if a.successor().id not in self.visited:
-                self.visited.append(a.successor().id)
+        for a in c.get_arcs(self.label):
+            if a.end_id not in self.visited:
+                self.visited.append(a.end_id)
                 yield a, depth
-                for r in self.depth_first(a.successor, depth):
+                for r in self.depth_first(a.end, depth):
                     yield r
     
     

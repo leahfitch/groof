@@ -18,9 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-"""
-@TODO store inverted arcs with vertex
-"""
 
 from datetime import date
 import json
@@ -28,16 +25,79 @@ from uuid import uuid4 as uuid
 import threading
 
 
-class TrackedAttrsMixin(object):
-    """Factored out methods for managing attributes fo vertices and arcs"""
+OUTGOING = 0
+INCOMING = 1
+
+
+class Arc(object):
+    """A tuple of (vp, e, vs)
     
+    All arcs have a label and direction. In addition, arcs can have arbitrary attributes.
+    """
+    
+    
+    dirlabels = {
+        OUTGOING: '->',
+        INCOMING: '<-'
+    }
+    
+    
+    def __init__(self, db, start, label, end, direction=OUTGOING):
+        self.db = db
+        self.start = start
+        self.label = label
+        if isinstance(end, Vertex):
+            self._end = end
+            self.end_id = end.id
+        else:
+            self.end_id = end
+            self._end = None
+        self.direction = direction
+        
+        
+    def get_end(self):
+        if self._end == None:
+            self._end = self.db[self.end_id]
+        return self._end
+    end = property(get_end)
+        
+        
+    def inverse(self):
+        return Arc(self.db, self.end, self.label, self.start, self.direction ^ 1)
+        
+        
+    def __eq__(self, other):
+        return hash(self) == hash(other)
+        
+        
+    def __hash__(self):
+        return hash(str(self))
+        
+        
+    def __str__(self):
+        return "Arc(%s, %s, %s, %s,)" % (self.start.id, self.label, self.end_id, self.dirlabels[self.direction])
+        
+        
+    def __repr__(self):
+        return str(self)
+
+
+
+class Vertex(object):
+    
+    def __init__(self, db, id_, attrs=None, arcs=None):
+        self.db = db
+        self.id = id_
+        self.attrs = attrs if attrs is not None else {}
+        self.arcs = arcs if arcs is not None else []
+        
+        
     def __getitem__(self, k):
         return self.attrs[k]
     
     
     def __setitem__(self, k, v):
         self.db.assert_serializable(v)
-        
         if k in self.attrs:
             if v == self.attrs[k]:
                 return
@@ -50,70 +110,29 @@ class TrackedAttrsMixin(object):
         if k in self.attrs:
             del self.attrs[k]
             self.db.im_dirty(self)
-
-
-
-class Arc(TrackedAttrsMixin):
-    """A tuple of (vp, e, vs)
-    
-    All arcs have a label. In addition, arcs can have arbitrary attributes.
-    """
-    
-    
-    def __init__(self, db, p, e, s, attrs={}):
-        self.db = db
-        self.p = p
-        self.e = e
-        if isinstance(s, Vertex):
-            self._successor = s
-            self.s = s.id
-        else:
-            self.s = s
-            self._successor = None
-        self.attrs = attrs
         
         
-    def predecessor(self):
-        return self.p
-    
-    
-    def edge(self):
-        return self.e
+    def __contains__(self, k):
+        return k in self.attrs
         
         
-    def successor(self):
-        if self._successor == None:
-            self._successor = self.db[self.s]
-        return self._successor
+    def items(self):
+        return self.attrs.items()
         
         
-    def __str__(self):
-        return "Arc(%s %s %s)" % (self.p.id, self.e, self.s)
-
-
-
-class Vertex(TrackedAttrsMixin):
-    
-    def __init__(self, db, id, attrs={}, arcs=[]):
-        self.db = db
-        self.id = id
-        self.attrs = attrs
-        self.arcs = arcs
-    
-    
-    def add_arc(self, e, s, attrs={}):
-        for a in self.arcs:
-            if a.e == e and a.s == s:
-                return a
-        a = Arc(self.db, self, e, s, attrs)
-        self.arcs.append(a)
-        self.db.im_dirty(self)
-    
-    
-    def get_arcs(self, e=None):
-        if e is None:
-            return self.arcs
-        return [a for a in self.arcs if a.e == e]
+    def add_arc(self, label, end, direction=OUTGOING):
+        a = Arc(self.db, self, label, end, direction)
+        if a not in self.arcs:
+            self.arcs.append(a)
+            self.db.im_dirty(self)
+            end.add_inverse_arc(a)
+        
+        
+    def add_inverse_arc(self, a):
+        a = a.inverse()
+        if a not in self.arcs:
+            self.arcs.append(a)
+            self.db.im_dirty(self)
     
     
     def remove_arc(self, a):
@@ -122,10 +141,44 @@ class Vertex(TrackedAttrsMixin):
             self.db.im_dirty(self)
         except IndexError:
             pass
+        else:
+            a.end.remove_inverse_arc(a)
+        
+        
+    def remove_inverse_arc(self, a):
+        a = a.inverse()
+        try:
+            self.arcs.remove(a)
+            self.db.im_dirty(self)
+        except IndexError:
+            pass
+        
+        
+    def get_arcs(self, label=None, direction=None):
+        if direction is None:
+            return [a for a in self.arcs if label is None or a.label == label]
+        else:
+            return [a for a in self.arcs if label is None or a.label == label and a.direction == direction]
+        
+        
+    def delete(self):
+        del self.db[self]
+        
+        
+    def __eq__(self, other):
+        return hash(self) == hash(other)
+        
+        
+    def __hash__(self):
+        return hash(str(self))
         
         
     def __str__(self):
         return "Vertex(%s)" % self.id
+        
+        
+    def __repr__(self):
+        return str(self)
 
 
 
@@ -143,7 +196,7 @@ class Transaction(object):
     def __exit__(self, exc_type, exc_val, tb):
         try:
             if exc_type is not None:
-                self.db.dirty = []
+                self.db.local.dirty = []
             else:
                 self.db.flush()
         finally:
@@ -161,13 +214,13 @@ class Graph(object):
         self.local.removed = []
         
         
-    def create(self, id=None):
+    def create(self, id=None, attrs=None):
         self.assert_in_txn()
         if id is None:
             id = self.create_id()
         if id in self.storage:
             raise ValueError, "A vertex with id %s already exists" % id
-        v = Vertex(self, id, {}, [])
+        v = Vertex(self, id, attrs)
         self.im_dirty(v)
         return v
     
@@ -176,14 +229,14 @@ class Graph(object):
         data = self.storage[id]
         attrs, arcs = json.loads(data)
         v = Vertex(self, id, attrs)
-        v.arcs = [Arc(self, v, e, s, attrs) for e,s,attrs in arcs]
+        v.arcs = [Arc(self, v, l, e, d) for l,e,d in arcs]
         return v
     
     
-    def __delitem__(self, id):
+    def __delitem__(self, v):
         self.assert_in_txn()
-        if id not in self.local.removed and id in self.storage:
-            self.local.removed.append(id)
+        if v not in self.local.removed and v.id in self.storage:
+            self.local.removed.append(v)
     
     
     def __len__(self):
@@ -199,10 +252,12 @@ class Graph(object):
     def flush(self):
         if len(self.local.dirty) > 0 or len(self.local.removed) > 0:
             with self.storage.txn():
-                for id in self.local.removed:
-                    del self.storage[id]
+                for v in self.local.removed:
+                    for a in v.get_arcs(None, OUTGOING):
+                        a.end.remove_inverse_arc(a)
+                    del self.storage[v.id]
                 for v in self.local.dirty:
-                    self.storage[v.id] = json.dumps((v.attrs, [(a.e,a.s,a.attrs) for a in v.arcs]))
+                    self.storage[v.id] = json.dumps((v.attrs, [(a.label,a.end_id,a.direction) for a in v.arcs]))
         
         
     def create_id(self):
@@ -212,9 +267,13 @@ class Graph(object):
     def im_dirty(self, item):
         self.assert_in_txn()
         if isinstance(item, Arc):
-            item = item.p
-        if item not in self.local.dirty:
-            self.local.dirty.append(item)
+            vertices = [item.start, item.end]
+        else:
+            vertices = [item]
+            
+        for v in vertices:
+            if v not in self.local.dirty:
+                self.local.dirty.append(v)
         
         
     def assert_serializable(self, v):
