@@ -18,39 +18,10 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-"""Interfaces and abstract base classes for ordered key-value storage.
+"""Interfaces and abstract base classes for key-value storage.
 
 At a minimum, implementations must provide IStorage and ITransaction.
 """
-
-
-
-class AbortTxn(Exception):
-    """Transaction should be aborted.
-    
-    Let's transaction context managers know that the transaction should be aborted
-    but not due to an error condition. This exception should be suppressed by
-    transaction context managers.
-    """
-
-
-
-class ITransaction(object):
-    """A transaction context manager."""
-    
-    
-    def __enter__(self):
-        """Begin a new transaction."""
-        raise NotImplementedError
-        
-        
-    def __exit__(self, exc_type, exc_val, tb):
-        """End the current transaction.
-        
-        If no exception occurred, commit. If an exception occurred, abort. 
-        If exc_type is AbortTxn, suppress it.
-        """
-        raise NotImplementedError
 
 
 
@@ -82,19 +53,6 @@ class IStorage(object):
         raise NotImplementedError
     
     
-    def cursor(self):
-        """Retrieve an ICursor for this storage object."""
-        
-        
-    def txn(self):
-        """An ITransaction for this storage object"""
-        raise NotImplementedError
-        
-        
-    def in_txn(self):
-        """True if there is a current transaction"""
-        raise NotImplementedError
-    
     
 class IDuplicateKeyStorage(object):
     """Storage supporting duplicate keys"""
@@ -115,6 +73,15 @@ class IDuplicateKeyStorage(object):
         raise NotImplementedError
     
     
+    
+class IPrefixMatchingStorage(object):
+    """Storage supporting key prefix matching"""
+    
+    def match_prefix(self, prefix):
+        """Get keys matching the given prefix"""
+    
+    
+    
 class IFileStorage(IStorage):
     """Disk backed ordered key-value storage"""
     
@@ -129,52 +96,10 @@ class IFileStorage(IStorage):
         raise NotImplementedError
     
     
-class IReadOnlyCursor(object):
-    """Simple, read-only cursor for ordered key-value storage"""
     
-    def first(self):
-        """Move the cursor to the first record in sorted order.
-        
-        If there are no records raise RuntimeError.
-        """
-        raise NotImplementedError
+class IStorageGroup(object):
+    """Provide storage instance attributes node, left, right and indices"""
     
-    
-    def last(self):
-        """Move the cursor to the last record in sorted order.
-        
-        If there are no records raise RuntimeError.
-        """
-        raise NotImplementedError
-    
-    
-    def moveto(self, k):
-        """Move the cursor to key k.
-        
-        If k does not exist, raise KeyError or move to the closest forward matching key.
-        """
-        raise NotImplementedError
-    
-    
-    def next(self):
-        """Move the cursor to the next record.
-        
-        If there is no next record raise KeyError.
-        """
-        raise NotImplementedError
-    
-    
-    def previous(self):
-        """Move the cursor to the previous record.
-        
-        If there is no previous record raise KeyError.
-        """
-        raise NotImplementedError
-        
-        
-    def record(self):
-        """Get a tuple of the key and value at the current position.
-        
-        If the cursor is unset, raise KeyError
-        """
+    def get_index(self, name):
+        """Get an index (IStorage, IDuplicateKeyStorage)"""
         raise NotImplementedError

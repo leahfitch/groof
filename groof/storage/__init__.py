@@ -1,1 +1,1 @@
-"""Ordered key/value storage implementations"""
+"""key/value storage implementations"""

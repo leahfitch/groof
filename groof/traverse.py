@@ -19,7 +19,11 @@
 # THE SOFTWARE.
 
 
-"""Simple graph traversal"""
+
+"""Simple graph traversal
+
+TODO: Update for current graph api
+"""
 
 from collections import deque
 

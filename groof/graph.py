@@ -19,9 +19,8 @@
 # THE SOFTWARE.
 
 
-from datetime import date
-import json
-from uuid import uuid4 as uuid
+import struct
+import cjson
 import threading
 
 
@@ -29,257 +28,273 @@ OUTGOING = 0
 INCOMING = 1
 
 
-class Arc(object):
-    """A tuple of (vp, e, vs)
+NODE_KEY_FORMAT = 'Q'
+NODE_KEY_SIZE = struct.calcsize(NODE_KEY_FORMAT)
+REL_FORMAT = 'I'
+REL_SIZE = struct.calcsize(REL_FORMAT)
+EDGE_KEY_FORMAT = 'QIQ'
+EDGE_KEY_SIZE = struct.calcsize(EDGE_KEY_FORMAT)
+
+
+def pack_node_key(id):
+    return struct.pack(NODE_KEY_FORMAT, id)
     
-    All arcs have a label and direction. In addition, arcs can have arbitrary attributes.
-    """
+    
+def unpack_node_key(s):
+    return struct.unpack(NODE_KEY_FORMAT, s)[0]
     
     
-    dirlabels = {
-        OUTGOING: '->',
-        INCOMING: '<-'
-    }
+def pack_edge_key(left_id, rel, right_id):
+    return struct.pack(EDGE_KEY_FORMAT, left_id, rel, right_id)
     
     
-    def __init__(self, db, start, label, end, direction=OUTGOING):
-        self.db = db
-        self.start = start
-        self.label = label
-        if isinstance(end, Vertex):
-            self._end = end
-            self.end_id = end.id
-        else:
-            self.end_id = end
-            self._end = None
-        self.direction = direction
+def unpack_edge_key(s):
+    return struct.unpack(EDGE_KEY_FORMAT, s)
+
+
+def invert_edge_key(edge_key_string):
+    return edge_key_string[REL_SIZE+NODE_KEY_SIZE:]+\
+        edge_key_string[NODE_KEY_SIZE:NODE_KEY_SIZE+REL_SIZE]+\
+        edge_key_string[:NODE_KEY_SIZE]
         
         
-    def get_end(self):
-        if self._end == None:
-            self._end = self.db[self.end_id]
-        return self._end
-    end = property(get_end)
-        
-        
-    def inverse(self):
-        return Arc(self.db, self.end, self.label, self.start, self.direction ^ 1)
-        
-        
-    def __eq__(self, other):
-        return hash(self) == hash(other)
-        
-        
-    def __hash__(self):
-        return hash(str(self))
-        
-        
-    def __str__(self):
-        return "Arc(%s, %s, %s, %s,)" % (self.start.id, self.label, self.end_id, self.dirlabels[self.direction])
-        
-        
-    def __repr__(self):
-        return str(self)
+def pack_edge_key_prefix(node_id, rel):
+    return struct.pack(EDGE_KEY_FORMAT[:2], node_id, rel)
 
 
 
-class Vertex(object):
+class AttrsMixin(object):
     
-    def __init__(self, db, id_, attrs=None, arcs=None):
-        self.db = db
-        self.id = id_
-        self.attrs = attrs if attrs is not None else {}
-        self.arcs = arcs if arcs is not None else []
-        
-        
     def __getitem__(self, k):
-        return self.attrs[k]
-    
-    
-    def __setitem__(self, k, v):
-        self.db.assert_serializable(v)
-        if k in self.attrs:
-            if v == self.attrs[k]:
-                return
+        return self._attrs[k]
         
-        self.attrs[k] = v
-        self.db.im_dirty(self)
+        
+    def __setitem__(self, k, v):
+        if k in self._attrs and self._attrs[k] == v:
+            return
+        self._attrs[k] = v
+        self._graph.dirty(self)
         
         
     def __delitem__(self, k):
-        if k in self.attrs:
-            del self.attrs[k]
-            self.db.im_dirty(self)
+        if k in self._attrs:
+            del self._attrs[k]
+            self._graph.dirty(self)
         
         
     def __contains__(self, k):
-        return k in self.attrs
+        return k in self._attrs
         
         
     def items(self):
-        return self.attrs.items()
+        return self._attrs.items()
         
         
-    def add_arc(self, label, end, direction=OUTGOING):
-        a = Arc(self.db, self, label, end, direction)
-        if a not in self.arcs:
-            self.arcs.append(a)
-            self.db.im_dirty(self)
-            end.add_inverse_arc(a)
+    def values(self):
+        return self._attrs.values()
         
         
-    def add_inverse_arc(self, a):
-        a = a.inverse()
-        if a not in self.arcs:
-            self.arcs.append(a)
-            self.db.im_dirty(self)
+    def __iter__(self):
+        return self._attrs.__iter__()
+    
+
+
+class Edge(AttrsMixin):
     
     
-    def remove_arc(self, a):
-        try:
-            self.arcs.remove(a)
-            self.db.im_dirty(self)
-        except IndexError:
-            pass
+    def __init__(self, graph, left_id, rel, right_id, attrs=None):
+        self._graph = graph
+        self.left_id = left_id
+        self.rel = rel
+        self.right_id = right_id
+        self._attrs = attrs if attrs is not None else {}
+        
+        
+    def _get_left(self):
+        return self._graph[self.left_id]
+    left = property(_get_left)
+    
+    
+    def _get_right(self):
+        return self._graph[self.right_id]
+    right = property(_get_right)
+    
+    
+    def remove(self):
+        self._graph.remove_edge(self)
+
+
+
+class Edges():
+    
+    def __init__(self, graph, node):
+        self._graph = graph
+        self._node = node
+        
+        
+    def __call__(self, rel, other=None, direction=OUTGOING):
+        if direction is OUTGOING:
+            return self._graph.get_edges(rel, left=self._node, right=other)
         else:
-            a.end.remove_inverse_arc(a)
+            return self._graph.get_edges(rel, left=other, right=self._node)
         
         
-    def remove_inverse_arc(self, a):
-        a = a.inverse()
-        try:
-            self.arcs.remove(a)
-            self.db.im_dirty(self)
-        except IndexError:
-            pass
+    def add(self, rel, right, **kwargs):
+        return self._graph.create_edge(self._node, rel, right, kwargs)
+
+
+
+class Node(AttrsMixin):
+    
+    __slots__ = ('_id', '_attrs', 'edges')
+    
+    def __init__(self, graph, id, attrs=None):
+        object.__setattr__(self, '_graph', graph)
+        object.__setattr__(self, '_id', id)
+        if attrs is None:
+            attrs = {}
+        object.__setattr__(self, '_attrs', attrs)
+        object.__setattr__(self, 'edges', Edges(self._graph, self))
         
         
-    def get_arcs(self, label=None, direction=None):
-        if direction is None:
-            return [a for a in self.arcs if label is None or a.label == label]
-        else:
-            return [a for a in self.arcs if label is None or a.label == label and a.direction == direction]
-        
-        
+    def _get_id(self):
+        return self._id
+    id = property(_get_id)
+    
+    
     def delete(self):
-        del self.db[self]
-        
-        
-    def __eq__(self, other):
-        return hash(self) == hash(other)
-        
-        
-    def __hash__(self):
-        return hash(str(self))
-        
-        
-    def __str__(self):
-        return "Vertex(%s)" % self.id
-        
-        
-    def __repr__(self):
-        return str(self)
-
-
-
-class Transaction(object):
-    
-    def __init__(self, db):
-        self.db = db
-        self.active = False
-        
-        
-    def __enter__(self):
-        self.active = True
-        
-        
-    def __exit__(self, exc_type, exc_val, tb):
-        try:
-            if exc_type is not None:
-                self.db.local.dirty = []
-            else:
-                self.db.flush()
-        finally:
-            self.active = False
+        del self._graph[self.id]
 
 
 
 class Graph(object):
     
-    
     def __init__(self, storage):
         self.storage = storage
-        self.local = threading.local()
-        self.local.dirty = []
-        self.local.removed = []
+        try:
+            self.last_node_id = struct.unpack('Q', self.storage.node[struct.pack('i', 0)])[0]
+        except KeyError:
+            self.last_node_id = 0
+            self.storage.node[struct.pack('i', 0)] = struct.pack('Q', 0)
+        self._local = threading.local()
+        self._reset_change_buffers()
+        self._in_context = False
         
         
-    def create(self, id=None, attrs=None):
-        self.assert_in_txn()
-        if id is None:
-            id = self.create_id()
-        if id in self.storage:
-            raise ValueError, "A vertex with id %s already exists" % id
-        v = Vertex(self, id, attrs)
-        self.im_dirty(v)
-        return v
-    
-    
-    def __getitem__(self, id):
-        data = self.storage[id]
-        attrs, arcs = json.loads(data)
-        v = Vertex(self, id, attrs)
-        v.arcs = [Arc(self, v, l, e, d) for l,e,d in arcs]
-        return v
-    
-    
-    def __delitem__(self, v):
-        self.assert_in_txn()
-        if v not in self.local.removed and v.id in self.storage:
-            self.local.removed.append(v)
-    
-    
-    def __len__(self):
-        return len(self.storage)
-    
-    
-    def txn(self):
-        if not hasattr(self.local, 'txn'):
-            self.local.txn = Transaction(self)
-        return self.local.txn
-    
-    
-    def flush(self):
-        if len(self.local.dirty) > 0 or len(self.local.removed) > 0:
-            with self.storage.txn():
-                for v in self.local.removed:
-                    for a in v.get_arcs(None, OUTGOING):
-                        a.end.remove_inverse_arc(a)
-                    del self.storage[v.id]
-                for v in self.local.dirty:
-                    self.storage[v.id] = json.dumps((v.attrs, [(a.label,a.end_id,a.direction) for a in v.arcs]))
-        
-        
-    def create_id(self):
-        return uuid().hex
-        
-        
-    def im_dirty(self, item):
-        self.assert_in_txn()
-        if isinstance(item, Arc):
-            vertices = [item.start, item.end]
-        else:
-            vertices = [item]
+    def __getitem__(self, node_id):
+        k = pack_node_key(node_id)
+        try:
+            attrs = cjson.decode(self.storage.node[k])
+        except KeyError:
+            raise KeyError, "No node found with id %s" % node_id
+        return Node(self, node_id, attrs)
             
-        for v in vertices:
-            if v not in self.local.dirty:
-                self.local.dirty.append(v)
+            
+    def __delitem__(self, node_id):
+        k = pack_node_key(node_id)
+        self._local.removed_nodes.add(k)
+            
+            
+    def create_node(self, **kwargs):
+        self.last_node_id += 1
+        n = Node(self, self.last_node_id, kwargs)
+        self.dirty(n)
+        return n
         
         
-    def assert_serializable(self, v):
-        if not isinstance(v, (int, float, str, unicode, list, tuple, dict)):
-            raise ValueError, "%s is not serializable" % v
+    def create_edge(self, left, rel, right, attrs=None):
+        k = pack_edge_key(left.id, rel, right.id)
+        if k in self.storage.left:
+            raise RuntimeError, "This edge already exists"
+        e = Edge(self, left.id, rel, right.id, attrs)
+        self.dirty(e)
+        return e
         
         
-    def assert_in_txn(self):
-        assert self.txn().active, "Operation not permitted outside a transaction"
+    def get_edges(self, rel, left=None, right=None):
+        if left is None and right is None:
+            raise ValueError, "Must specify at least one of left,right"
+        edges = []
+        if left is None:
+            prefix = pack_edge_key_prefix(right.id, rel)
+            for k in self.storage.right.match_prefix(prefix):
+                k = invert_edge_key(k)
+                (left_id, rel, right_id) = unpack_edge_key(k)
+                attrs = self.storage.left[k]
+                edges.append(Edge(self, left_id, rel, right_id, attrs))
+        elif right is None:
+            prefix = pack_edge_key_prefix(left.id, rel)
+            for k in self.storage.left.match_prefix(prefix):
+                (left_id, rel, right_id) = unpack_edge_key(k)
+                attrs = self.storage.left[k]
+                edges.append(Edge(self, left_id, rel, right_id, attrs))
+        else:
+            try:
+                attrs = self.storage.left[pack_edge_key(left.id, rel, right.id)]
+                edges.append(Edge(self, left.id, rel, right.id, attrs))
+            except KeyError:
+                pass
+        return edges
+        
+        
+    def delete_edge(self, edge):
+        self._local.removed_edges.add(pack_edge_key(edge.left_id, edge.rel, edge.right_id))
+        
+        
+    def save(self):
+        for k in self._local.removed_edges:
+            try:
+                del self.storage.left[k]
+                del self.storage.left[invert_edge_key(k)]
+            except KeyError:
+                pass
+        for node_id in self._local.removed_edges:
+            node_key = pack_node_key(node_id)
+            if node_key in self.storage.node:
+                for k in self.storage.left.match_prefix(node_key):
+                    del self.storage.left[k]
+                for k in self.storage.right.match_prefix(node_key):
+                    del self.storage.right[k]
+                del self.storage.node[node_key]
+        for n in self._local.dirty_nodes:
+            self.storage.node[pack_node_key(n.id)] = cjson.encode(n._attrs)
+        for e in self._local.dirty_edges:
+            k = pack_edge_key(e.left_id, e.rel, e.right_id)
+            self.storage.left[k] = cjson.encode(e._attrs)
+            self.storage.right[invert_edge_key(k)] = ''
+        self._reset_change_buffers()
+        
+        
+    def revert(self):
+        self._reset_change_buffers()
+        
+        
+    def __enter__(self):
+        self._in_context = True
+        self.revert()
+        
+        
+    def __exit__(self, exc, exc_type, tb):
+        try:
+            if exc:
+                self.revert()
+            else:
+                self.save()
+        finally:
+            self._in_context = False
+        
+        
+    def dirty(self, item):
+        if not self._in_context:
+            raise Exception, "Attempting to modify graph outside graph context"
+        if isinstance(item, Edge):
+            self._local.dirty_edges.add(item)
+        else:
+            self._local.dirty_nodes.add(item)
+        
+        
+    def _reset_change_buffers(self):
+        self._local.dirty_nodes = set()
+        self._local.dirty_edges = set()
+        self._local.removed_nodes = set()
+        self._local.removed_edges = set()

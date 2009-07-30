@@ -23,21 +23,13 @@ File storage implementation backed by tokyo cabinet (requires pytc).
 """
 
 
-import pytc
-from abstract import (
-    AbortTxn, ITransaction, IFileStorage, IDuplicateKeyStorage, IReadOnlyCursor
-)
+import os, os.path
+from tokyocabinet import btree, hash
+from abstract import IFileStorage, IPrefixMatchingStorage, IDuplicateKeyStorage, IStorageGroup
 
 
-
-class TokyoCabinetStorage(IFileStorage, IDuplicateKeyStorage):
+class TokyoCabinetStorage(IFileStorage, IPrefixMatchingStorage):
     
-    
-    def __init__(self):
-        self._db = pytc.BDB()
-        self._txn = TokyoCabinetTransaction(self._db)
-        
-        
     def __setitem__(self, k, v):
         self._db[k] = v
         
@@ -51,7 +43,7 @@ class TokyoCabinetStorage(IFileStorage, IDuplicateKeyStorage):
             
     def __delitem__(self, k):
         try:
-            del self._db[k]
+            self._db.out(k)
         except KeyError:
             raise KeyError, k
             
@@ -60,118 +52,109 @@ class TokyoCabinetStorage(IFileStorage, IDuplicateKeyStorage):
         return k in self._db
             
             
-    def setdup(self, k, v):
-        self._db.putdup(k,v)
-        
-        
-    def getdup(self, k):
-        try:
-            return self._db.getlist(k)
-        except KeyError:
-            raise KeyError, k
-            
-            
-    def deldup(self, k):
-        try:
-            self._db.outlist(k)
-        except KeyError:
-            raise KeyError, k
-            
-            
     def __len__(self):
         return len(self._db)
             
             
-    def cursor(self):
-        return TokyoCabinetCursor(self._db)
+    def clear(self):
+        self._db.vanish()
         
         
-    def txn(self):
-        return self._txn
+    def close(self):
+        self._db.close()
         
         
-    def in_txn(self):
-        return self._txn.active
+    def flush(self):
+        self._db.flush()
+        
+        
+    def copy(self, path):
+        self._db.copy(path)
+        
+        
+    def match_prefix(self, prefix, limit=-1):
+        return self._db.fwmkeys(prefix, limit)
+        
+        
+        
+class BTreeStorage(TokyoCabinetStorage, IDuplicateKeyStorage):
+    
+    def __init__(self):
+        self._db = btree.BTree()
+        self._db.tune(0,0,0,0,0,btree.BDBTLARGE|btree.BDBTTCBS)
         
         
     def open(self, path, mode):
         if mode == 'r':
-            flags = pytc.BDBOREADER
+            flags = btree.BDBOREADER
         elif mode == 'rw':
-            flags = pytc.BDBOREADER | pytc.BDBOWRITER | pytc.BDBOCREAT
+            flags = btree.BDBOREADER | btree.BDBOWRITER | btree.BDBOCREAT
         else:
             raise ValueError, "Expected mode to be 'r' or 'rw'"
             
         self._db.open(path, flags)
         
         
-    def close(self):
-        self._db.close()
-
-
-
-class TokyoCabinetTransaction(ITransaction):
-    
-    
-    def __init__(self, _db):
-        self._db = _db
-        self.active = False
+    def setdup(self, k, v):
+        self._db.putdup(k,v)
         
         
-    def __enter__(self):
-        self._db.tranbegin()
-        self.active = True
-        
-        
-    def __exit__(self, exc_type, exc_val, tb):
+    def getdup(self, k):
         try:
-            if exc_type is None:
-                self._db.trancommit()
-                self._db.sync()
-            else:
-                self._db.tranabort()
-                if exc_type == AbortTxn:
-                    return True
-        finally:
-            self.active = False
-
-
-
-class TokyoCabinetCursor(IReadOnlyCursor):
-    
-    def __init__(self, _db):
-        self._c = _db.curnew()
-        
-        
-    def first(self):
-        try:
-            self._c.first()
+            return self._db.getdup(k)
         except KeyError:
-            raise RuntimeError, "Can't set a cursor since there are no records"
-        
-        
-    def last(self):
+            raise KeyError, k
+            
+            
+    def deldup(self, k):
         try:
-            self._c.last()
+            return self._db.outdup(k)
         except KeyError:
-            raise RuntimeError, "Can't set a cursor since there are no records"
+            raise KeyError, k
         
         
-    def moveto(self, k):
-        try:
-            self._c.jump(k)
-        except KeyError:
-            raise RuntimeError, "Can't set a cursor since there are no records"
+        
+class HashTableStorage(TokyoCabinetStorage):
     
+    def __init__(self):
+        self._db = hash.Hash()
+        self._db.tune(0,0,0,hash.HDBTLARGE|hash.HDBTTCBS)
+        
+        
+    def open(self, path, mode):
+        if mode == 'r':
+            flags = hash.HDBOREADER
+        elif mode == 'rw':
+            flags = hash.HDBOREADER | hash.HDBOWRITER | hash.HDBOCREAT
+        else:
+            raise ValueError, "Expected mode to be 'r' or 'rw'"
+            
+        self._db.open(path, flags)
+        
+        
+        
+class TokyoCabinetStorageGroup(IStorageGroup):
     
-    def next(self):
-        self._c.next()
+    def __init__(self, basedir):
+        if not os.path.exists(basedir):
+            os.makedirs(basedir)
+            
+        storage_defs = [
+            ('node',HashTableStorage),
+            ('left',HashTableStorage),
+            ('right',HashTableStorage)
+        ]
+        
+        for n,T in storage_defs:
+            i = T()
+            i.open(os.path.join(basedir, n), 'rw')
+            setattr(self, n, i)
         
         
-    def previous(self):
-        self._c.prev()
         
-        
-    def current(self):
-        return self._c.rec()
-        
+    def get_index(self, name):
+        if not os.path.exists(os.path.join(basedir, 'indices')):
+            os.mkdir(os.path.join(basedir, 'indices'))
+        index = BTreeStorage()
+        index.open(os.path.join(basedir, 'indices', name),'rw')
+        return index
