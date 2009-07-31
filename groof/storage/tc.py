@@ -65,7 +65,7 @@ class TokyoCabinetStorage(IFileStorage, IPrefixMatchingStorage):
         
         
     def flush(self):
-        self._db.flush()
+        self._db.sync()
         
         
     def copy(self, path):
@@ -141,8 +141,8 @@ class TokyoCabinetStorageGroup(IStorageGroup):
             
         storage_defs = [
             ('node',HashTableStorage),
-            ('left',HashTableStorage),
-            ('right',HashTableStorage)
+            ('left',BTreeStorage),
+            ('right',BTreeStorage)
         ]
         
         for n,T in storage_defs:
@@ -158,3 +158,9 @@ class TokyoCabinetStorageGroup(IStorageGroup):
         index = BTreeStorage()
         index.open(os.path.join(basedir, 'indices', name),'rw')
         return index
+        
+        
+    def flush(self):
+        self.node.flush()
+        self.left.flush()
+        self.right.flush()

@@ -103,3 +103,8 @@ class IStorageGroup(object):
     def get_index(self, name):
         """Get an index (IStorage, IDuplicateKeyStorage)"""
         raise NotImplementedError
+        
+        
+    def flush(self):
+        """Flush writes to disk"""
+        raise NotImplementedError

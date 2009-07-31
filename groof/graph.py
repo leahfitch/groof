@@ -59,6 +59,8 @@ def invert_edge_key(edge_key_string):
         
         
 def pack_edge_key_prefix(node_id, rel):
+    if rel is None:
+        return pack_node_key(node_id)
     return struct.pack(EDGE_KEY_FORMAT[:2], node_id, rel)
 
 
@@ -195,6 +197,17 @@ class Graph(object):
         self._local.removed_nodes.add(k)
             
             
+    def __len__(self):
+        return len(self.storage.node)
+        
+        
+    def stats(self):
+        return dict(
+            num_nodes = len(self.storage.node),
+            num_edges = len(self.storage.left),
+        )
+        
+        
     def create_node(self, **kwargs):
         self.last_node_id += 1
         n = Node(self, self.last_node_id, kwargs)
@@ -267,6 +280,10 @@ class Graph(object):
         
     def revert(self):
         self._reset_change_buffers()
+        
+        
+    def flush(self):
+        self.storage.flush()
         
         
     def __enter__(self):
