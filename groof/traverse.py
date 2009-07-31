@@ -35,10 +35,10 @@ DFS = 2
 
 class Traversal(object):
     
-    def __init__(self, last_vertex, vertex, last_arc, depth, traversed, returned):
-        self.last_vertex = last_vertex
-        self.vertex = vertex
-        self.last_arc = last_arc
+    def __init__(self, last_node, node, last_edge, depth, traversed, returned):
+        self.last_node = last_node
+        self.node = node
+        self.last_edge = last_edge
         self.depth = depth
         self.traversed = traversed
         self.returned = returned
@@ -47,16 +47,16 @@ class Traversal(object):
 class Traverser(object):
     
     
-    def __init__(self, start_v, traversal_algorithm, label=None):
+    def __init__(self, start_node, traversal_algorithm, rel=None):
         if traversal_algorithm == BFS:
-            self.arcs = self.breadth_first(deque([(start_v, 0)]))
+            self.edges = self.breadth_first(deque([(start_node, 0)]))
         elif traversal_algorithm == DFS:
-            self.arcs = self.depth_first(start_v, 0)
+            self.edges = self.depth_first(start_node, 0)
         else:
             raise ValueError, "Unknown traversal algorithm: %s", self.traversal_algorithm
             
-        self.label = label
-        self.traversal = Traversal(None, start_v, None, 0, 0, 0)
+        self.rel = rel
+        self.traversal = Traversal(None, start_node, None, 0, 0, 0)
         self.visited = []
         
         
@@ -65,40 +65,40 @@ class Traverser(object):
             return
         if self.should_return(self.traversal):
             self.traversal.returned += 1
-            yield self.traversal.vertex
-        self.visited.append(self.traversal.vertex.id)
-        for a, depth in self.arcs:
-            self.traversal.last_vertex = self.traversal.vertex
-            self.traversal.vertex = a.end
-            self.traversal.last_arc = a
+            yield self.traversal.node
+        self.visited.append(self.traversal.node.id)
+        for a, depth in self.edges:
+            self.traversal.last_node = self.traversal.node
+            self.traversal.node = a.right
+            self.traversal.last_edge = a
             self.traversal.depth = depth
             self.traversal.traversed += 1
             if self.should_stop(self.traversal):
                 break
             if self.should_return(self.traversal):
                 self.traversal.returned += 1
-                yield self.traversal.vertex
+                yield self.traversal.node
     
     
     def breadth_first(self, q):
         while len(q) > 0:
-            v,depth = q.popleft()
+            node,depth = q.popleft()
             depth += 1
-            for a in v.get_arcs(self.label):
-                if a.end_id not in self.visited:
-                    self.visited.append(a.end_id)
-                    yield a, depth
-                    q.append((a.end, depth))
+            for edge in node.edges(self.rel):
+                if edge.right_id not in self.visited:
+                    self.visited.append(edge.right_id)
+                    yield edge, depth
+                    q.append((edge.right, depth))
         
         
-    def depth_first(self, c, depth):
+    def depth_first(self, node, depth):
         depth += 1
-        for a in c.get_arcs(self.label):
-            if a.end_id not in self.visited:
-                self.visited.append(a.end_id)
-                yield a, depth
-                for r in self.depth_first(a.end, depth):
-                    yield r
+        for edge in node.edges(self.rel):
+            if edge.right_id not in self.visited:
+                self.visited.append(edge.right_id)
+                yield edge, depth
+                for e in self.depth_first(edge.right, depth):
+                    yield e
     
     
     def should_stop(self, t):
