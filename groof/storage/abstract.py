@@ -54,6 +54,23 @@ class IStorage(object):
     
     
     
+class ITransactionalStorage(object):
+    """Storage that supports transactions"""
+    
+    def start_txn(self):
+        raise NotImplementedError
+    
+    
+    def abort_txn(self):
+        raise NotImplementedError
+    
+    
+    def commit_txn(self):
+        raise NotImplementedError
+    
+    
+    
+    
 class IDuplicateKeyStorage(object):
     """Storage supporting duplicate keys"""
     
@@ -79,6 +96,19 @@ class IPrefixMatchingStorage(object):
     
     def match_prefix(self, prefix):
         """Get keys matching the given prefix"""
+        
+        
+        
+class IIterableStorage(object):
+    """Storage supporting iteration of records"""
+    
+    def __iter__(self):
+        """Get an iterator over keys"""
+        raise NotImplementedError
+        
+        
+    def iter_records(self):
+        """Get an iterator over records"""
     
     
     
@@ -100,11 +130,35 @@ class IFileStorage(IStorage):
 class IStorageGroup(object):
     """Provide storage instance attributes node, left, right and indices"""
     
+    storage_attrs = ['node', 'left', 'right']
+    
+    
     def get_index(self, name):
         """Get an index (IStorage, IDuplicateKeyStorage)"""
+        raise NotImplementedError
+        
+        
+    def remove_index(self, name):
+        """Remove an index"""
         raise NotImplementedError
         
         
     def flush(self):
         """Flush writes to disk"""
         raise NotImplementedError
+        
+        
+class TransactionalStorageGroup(IStorageGroup, ITransactionalStorage):
+    
+    
+    def start_txn(self):
+        [getattr(self, n).start_txn() for n in self.storage_attrs]
+    
+    
+    def abort_txn(self):
+        [getattr(self, n).abort_txn() for n in self.storage_attrs]
+    
+    
+    def commit_txn(self):
+        [getattr(self, n).commit_txn() for n in self.storage_attrs]
+        

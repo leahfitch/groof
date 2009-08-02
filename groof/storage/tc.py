@@ -24,11 +24,14 @@ File storage implementation backed by tokyo cabinet (requires pytc).
 
 
 import os, os.path
-from tokyocabinet import btree, hash
-from abstract import IFileStorage, IPrefixMatchingStorage, IDuplicateKeyStorage, IStorageGroup
+from tokyocabinet import btree
+from abstract import (
+    IFileStorage, IPrefixMatchingStorage, IDuplicateKeyStorage, IIterableStorage,
+    ITransactionalStorage, TransactionalStorageGroup
+)
 
 
-class TokyoCabinetStorage(IFileStorage, IPrefixMatchingStorage):
+class TokyoCabinetStorage(IFileStorage, IPrefixMatchingStorage, ITransactionalStorage):
     
     def __setitem__(self, k, v):
         self._db[k] = v
@@ -76,8 +79,20 @@ class TokyoCabinetStorage(IFileStorage, IPrefixMatchingStorage):
         return self._db.fwmkeys(prefix, limit)
         
         
+    def start_txn(self):
+        self._db.tranbegin()
         
-class BTreeStorage(TokyoCabinetStorage, IDuplicateKeyStorage):
+        
+    def abort_txn(self):
+        self._db.tranabort()
+        
+        
+    def commit_txn(self):
+        self._db.trancommit()
+        
+        
+        
+class BTreeStorage(TokyoCabinetStorage, IDuplicateKeyStorage, IIterableStorage):
     
     def __init__(self):
         self._db = btree.BTree()
@@ -111,56 +126,60 @@ class BTreeStorage(TokyoCabinetStorage, IDuplicateKeyStorage):
             return self._db.outdup(k)
         except KeyError:
             raise KeyError, k
-        
-        
-        
-class HashTableStorage(TokyoCabinetStorage):
-    
-    def __init__(self):
-        self._db = hash.Hash()
-        self._db.tune(0,0,0,hash.HDBTLARGE|hash.HDBTTCBS)
-        
-        
-    def open(self, path, mode):
-        if mode == 'r':
-            flags = hash.HDBOREADER
-        elif mode == 'rw':
-            flags = hash.HDBOREADER | hash.HDBOWRITER | hash.HDBOCREAT
-        else:
-            raise ValueError, "Expected mode to be 'r' or 'rw'"
             
-        self._db.open(path, flags)
+            
+    def __iter__(self):
+        if len(self._db) == 0:
+            return
+            
+        c = self._db.cursor()
+        
+        c.first()
+        k = c.key()
+        
+        try:
+            while k:
+                yield k
+                c.next()
+                k = c.key()
+        except KeyError:
+            pass
+            
+            
+    def iter_records(self):
+        if len(self._db) == 0:
+            return
+            
+        c = self._db.cursor()
+        
+        c.first()
+        r = c.rec()
+        try:
+            while 1:
+                yield r
+                c.next()
+                r = c.rec()
+        except KeyError:
+            pass
         
         
         
-class TokyoCabinetStorageGroup(IStorageGroup):
+class TokyoCabinetStorageGroup(TransactionalStorageGroup):
     
     def __init__(self, basedir):
         if not os.path.exists(basedir):
             os.makedirs(basedir)
-            
-        storage_defs = [
-            ('node',HashTableStorage),
-            ('left',BTreeStorage),
-            ('right',BTreeStorage)
-        ]
         
-        for n,T in storage_defs:
-            i = T()
+        for n in self.storage_attrs:
+            i = BTreeStorage()
             i.open(os.path.join(basedir, n), 'rw')
             setattr(self, n, i)
         
         
         
     def get_index(self, name):
-        if not os.path.exists(os.path.join(basedir, 'indices')):
-            os.mkdir(os.path.join(basedir, 'indices'))
-        index = BTreeStorage()
-        index.open(os.path.join(basedir, 'indices', name),'rw')
-        return index
+        pass
         
         
-    def flush(self):
-        self.node.flush()
-        self.left.flush()
-        self.right.flush()
+    def remove_index(self, name):
+        pass

@@ -23,6 +23,12 @@ import struct
 import cjson
 import threading
 
+try:
+    import igraph
+    igraph_available = True
+except ImportError:
+    igraph_available = False
+
 
 OUTGOING = 0
 INCOMING = 1
@@ -134,11 +140,26 @@ class Edges():
         self._node = node
         
         
-    def __call__(self, rel, other=None, direction=OUTGOING):
+    def __call__(self, rel=None, other=None, direction=OUTGOING):
         if direction is OUTGOING:
             return self._graph.get_edges(rel, left=self._node, right=other)
-        else:
+        elif direction is INCOMING:
             return self._graph.get_edges(rel, left=other, right=self._node)
+        else:
+            return self._graph.get_edges(
+                rel, left=self._node, right=other)+self._graph.get_edges(
+                rel, left=other, right=self._node)
+            
+            
+    def count(self, rel, other=None, direction=OUTGOING):
+        if direction is OUTGOING:
+            return self._graph.count_edges(rel, left=self._node, right=other)
+        elif direction is INCOMING:
+            return self._graph.count_edges(rel, left=other, right=self._node)
+        else:
+            return self._graph.count_edges(
+                rel, left=self._node, right=other)+self._graph.count_edges(
+                rel, left=other, right=self._node)
         
         
     def add(self, rel, right, **kwargs):
@@ -174,9 +195,10 @@ class Graph(object):
     def __init__(self, storage):
         self.storage = storage
         try:
-            self.last_node_id = struct.unpack('Q', self.storage.node[struct.pack('i', 0)])[0]
+            self.last_node_id = self.next_node_id = struct.unpack(
+                'Q', self.storage.node[struct.pack('i', 0)])[0]
         except KeyError:
-            self.last_node_id = 0
+            self.last_node_id = self.next_node_id = 0
             self.storage.node[struct.pack('i', 0)] = struct.pack('Q', 0)
         self._local = threading.local()
         self._reset_change_buffers()
@@ -198,19 +220,19 @@ class Graph(object):
             
             
     def __len__(self):
-        return len(self.storage.node)
+        return len(self.storage.node)-1
         
         
     def stats(self):
         return dict(
-            num_nodes = len(self.storage.node),
-            num_edges = len(self.storage.left),
+            num_nodes = len(self),
+            num_edges = len(self.storage.left)
         )
         
         
     def create_node(self, **kwargs):
-        self.last_node_id += 1
-        n = Node(self, self.last_node_id, kwargs)
+        self.next_node_id += 1
+        n = Node(self, self.next_node_id, kwargs)
         self.dirty(n)
         return n
         
@@ -250,40 +272,60 @@ class Graph(object):
         return edges
         
         
+    def count_edges(self, rel, left=None, right=None):
+        if left is None and right is None:
+            raise ValueError, "Must specify at least one of left,right"
+        edges = []
+        if left is None:
+            prefix = pack_edge_key_prefix(right.id, rel)
+            return len(self.storage.right.match_prefix(prefix))
+        elif right is None:
+            prefix = pack_edge_key_prefix(left.id, rel)
+            return len(self.storage.left.match_prefix(prefix))
+        else:
+            return 1 if pack_edge_key(right.id, rel, left.id) in self.storage.right else 0
+        
+        
     def delete_edge(self, edge):
         self._local.removed_edges.add(pack_edge_key(edge.left_id, edge.rel, edge.right_id))
         
         
     def save(self):
-        for k in self._local.removed_edges:
-            try:
-                del self.storage.left[k]
-                del self.storage.left[invert_edge_key(k)]
-            except KeyError:
-                pass
-        for node_id in self._local.removed_edges:
-            node_key = pack_node_key(node_id)
-            if node_key in self.storage.node:
-                for k in self.storage.left.match_prefix(node_key):
+        self.storage.start_txn()
+        try:
+            for k in self._local.removed_edges:
+                try:
                     del self.storage.left[k]
-                for k in self.storage.right.match_prefix(node_key):
-                    del self.storage.right[k]
-                del self.storage.node[node_key]
-        for n in self._local.dirty_nodes:
-            self.storage.node[pack_node_key(n.id)] = cjson.encode(n._attrs)
-        for e in self._local.dirty_edges:
-            k = pack_edge_key(e.left_id, e.rel, e.right_id)
-            self.storage.left[k] = cjson.encode(e._attrs)
-            self.storage.right[invert_edge_key(k)] = ''
-        self._reset_change_buffers()
+                    del self.storage.left[invert_edge_key(k)]
+                except KeyError:
+                    pass
+            for node_id in self._local.removed_edges:
+                node_key = pack_node_key(node_id)
+                if node_key in self.storage.node:
+                    for k in self.storage.left.match_prefix(node_key):
+                        del self.storage.left[k]
+                    for k in self.storage.right.match_prefix(node_key):
+                        del self.storage.right[k]
+                    del self.storage.node[node_key]
+            for n in self._local.dirty_nodes:
+                self.storage.node[pack_node_key(n.id)] = cjson.encode(n._attrs)
+            for e in self._local.dirty_edges:
+                k = pack_edge_key(e.left_id, e.rel, e.right_id)
+                self.storage.left[k] = cjson.encode(e._attrs)
+                self.storage.right[invert_edge_key(k)] = ''
+            self._reset_change_buffers()
+            num_new_nodes = self.next_node_id - self.last_node_id
+            if num_new_nodes > 0:
+                self.storage.node[struct.pack('i', 0)] = struct.pack('Q', self.next_node_id)
+                self.last_node_id = self.next_node_id
+            self.storage.commit_txn()
+        except:
+            self.storage.abort_txn()
+            raise
         
         
     def revert(self):
         self._reset_change_buffers()
-        
-        
-    def flush(self):
-        self.storage.flush()
         
         
     def __enter__(self):
@@ -308,6 +350,64 @@ class Graph(object):
             self._local.dirty_edges.add(item)
         else:
             self._local.dirty_nodes.add(item)
+            
+            
+    def to_igraph(self, rel=None, include_edge_attrs=[], directed=True):
+        if not igraph_available:
+            raise RuntimeError, "igraph library is not available"
+        
+        num_nodes = len(self)
+        
+        if len(self) == 0:
+            return igraph.Graph()
+        
+        node_map = {}
+        node_ids = []
+        nodes = self.storage.node.__iter__()
+        nodes.next() # discard 0 record containting next node id
+        for i,k in enumerate(nodes):
+            node_id = unpack_node_key(k)
+            node_map[node_id] = i
+            node_ids.append(node_id)
+        
+        def gen_edges_for_rel():
+            for k in self.storage.right:
+                k = invert_edge_key(k)
+                edge = unpack_edge_key(k)
+                if edge[1] == rel:
+                    yield k, (node_map[edge[0]],node_map[edge[2]])
+        
+        def gen_edges():
+            for k in self.storage.right:
+                k = invert_edge_key(k)
+                edge = unpack_edge_key(k)
+                yield k, (node_map[edge[0]],node_map[edge[2]])
+        
+        if rel is None:
+            source_edges = gen_edges()
+        else:
+            source_edges = gen_edges_for_rel()
+        
+        if include_edge_attrs:
+            edge_attrs = dict([(k,[]) for k in include_edge_attrs])
+        else:
+            edge_attrs = None
+        
+        if edge_attrs is None:
+            edges = [e for k,e in source_edges]
+        else:
+            edges = []
+            for k,e in source_edges:
+                edges.append(e)
+                attrs = cjson.decode(self.storage.left[k])
+                for k in edge_attrs:
+                    edge_attrs[k].push(attrs.get(k))
+        
+        kwargs = dict(edges=edges, directed=directed, vertex_attrs=dict(id=node_ids))
+        if edge_attrs is not None:
+            kwargs['edge_attrs'] = edge_attrs
+        
+        return igraph.Graph(**kwargs)
         
         
     def _reset_change_buffers(self):
