@@ -175,11 +175,18 @@ class TokyoCabinetStorageGroup(TransactionalStorageGroup):
             i.open(os.path.join(basedir, n), 'rw')
             setattr(self, n, i)
         
+        self.index_dir = os.path.join(basedir, 'indices')
+        
+        if not os.path.exists(self.index_dir):
+            os.makedirs(self.index_dir)
+            
+        self.indices = {}
+        
         
         
     def get_index(self, name):
-        pass
+        if name not in self.indices:
+            self.indices[name] = BTreeStorage()
+            self.indices[name].open(os.path.join(self.index_dir, name),'rw')
+        return self.indices[name]
         
-        
-    def remove_index(self, name):
-        pass

@@ -190,6 +190,60 @@ class Node(AttrsMixin):
 
 
 
+class Index(object):
+    
+    
+    def __init__(self, name, graph):
+        self._graph = graph
+        self._index = self._graph.storage.get_index(name)
+        
+        
+    def __getitem__(self, k):
+        try:
+            node_id = unpack_node_key(self._index[k])
+        except KeyError:
+            raise KeyError, "No node found for key %s" % k
+        try:
+            return self._graph[node_id]
+        except KeyError:
+            del self._index[k]
+            raise KeyError, "No node found for key %s" % k
+            
+            
+    def __setitem__(self, k, node):
+        self._index[k] = pack_node_key(node.id)
+        
+        
+    def __delitem__(self, k):
+        del self._index[k]
+        
+        
+    def getmulti(self, k):
+        try:
+            node_ids = self._index.getdup(k)
+        except KeyError:
+            raise KeyError, "No nodes found for key %s" % k
+        nodes = []
+        for node_id in node_ids:
+            try:
+                nodes.append(self._graph[unpack_node_key(node_id)])
+            except KeyError:
+                pass
+        if len(nodes) == 0:
+            self._index.deldup(k)
+            raise KeyError, "No nodes found for key %s" % k
+        return nodes
+        
+        
+    def setmulti(self, k, node):
+        self._index.setdup(k, pack_node_key(node.id))
+        
+        
+    def delmulti(self, k):
+        self._index.deldup(k)
+
+
+
 class Graph(object):
     
     def __init__(self, storage):
@@ -221,6 +275,10 @@ class Graph(object):
             
     def __len__(self):
         return len(self.storage.node)-1
+        
+        
+    def get_index(self, name):
+        return Index(name, self)
         
         
     def stats(self):

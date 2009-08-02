@@ -58,6 +58,19 @@
 ...         raise StopIteration # stop traversal
 >>> [n['name'] for n in traverser(evaluator, start, BFS)]
 [0, 1, 2, 5, 7]
+>>> # use indices
+>>> byname = g.get_index('byname')
+>>> with g:
+...     byname[n1['name']] = n1
+...     byname[n2['name']] = n2
+>>> byname['The Green Knight'].id
+1
+>>> bytype = g.get_index('bytype')
+>>> with g:
+...     bytype.setmulti('knight', n1)
+...     bytype.setmulti('knight', n2)
+>>> [n['name'] for n in bytype.getmulti('knight')]
+['The Green Knight', 'The Black Knight']
 """
 
 from __future__ import with_statement

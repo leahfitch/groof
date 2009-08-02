@@ -153,12 +153,14 @@ class TransactionalStorageGroup(IStorageGroup, ITransactionalStorage):
     
     def start_txn(self):
         [getattr(self, n).start_txn() for n in self.storage_attrs]
+        [i.start_txn() for i in self.indices.values()]
     
     
     def abort_txn(self):
         [getattr(self, n).abort_txn() for n in self.storage_attrs]
+        [i.abort_txn() for i in self.indices.values()]
     
     
     def commit_txn(self):
         [getattr(self, n).commit_txn() for n in self.storage_attrs]
-        
+        [i.commit_txn() for i in self.indices.values()]
