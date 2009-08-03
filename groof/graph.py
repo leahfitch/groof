@@ -241,6 +241,11 @@ class Index(object):
         
     def delmulti(self, k):
         self._index.deldup(k)
+        
+        
+    def __iter__(self):
+        for k,v in self._index.iter_records():
+            yield self._graph[unpack_node_key(v)]
 
 
 
