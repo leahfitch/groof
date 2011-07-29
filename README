@@ -1,0 +1,1 @@
+Groof is a fun way to experiment with persitent, labelled, directed graphs. It supports basic CRUD and retrieval as well as a traverser framework. There is an abstract storage API and one implementation using TokyoCabinet. If igraph is installed, any graph may be exported to igraph format.
